@@ -34,7 +34,9 @@ image: scheduler-linux
 	docker build --no-cache . -t scheduler-framework-sample:$(TAG)
 
 update:
-	dep ensure -update -v
+	go mod download
+	go mod tidy
+	go mod vendor
 
 clean:
 	rm -rf _output/
