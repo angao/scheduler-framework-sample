@@ -7,7 +7,7 @@ And the custom scheduler name is `scheduler-framework-sample` which defines in `
 
 ### binary
 ```shell
-$ make scheduler 
+$ make local
 ```
 
 ### image

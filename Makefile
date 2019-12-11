@@ -19,18 +19,18 @@ TAG ?= ${shell (git describe --tags --abbrev=14 | sed "s/-g\([0-9a-f]\{14\}\)$/+
 
 .EXPORT_ALL_VARIABLES:
 
-all: scheduler
+all: local
 
 init:
 	mkdir -p ${BIN_DIR}
 
-scheduler: init
+local: init
 	go build -o=${BIN_DIR}/scheduler-framework-sample ./cmd/scheduler
 
-scheduler-linux: init
+build-linux: init
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o=${BIN_DIR}/scheduler-framework-sample ./cmd/scheduler
 
-image: scheduler-linux
+image: build-linux
 	docker build --no-cache . -t scheduler-framework-sample:$(TAG)
 
 update:
