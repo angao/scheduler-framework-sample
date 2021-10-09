@@ -5,23 +5,21 @@ metadata:
   namespace: kube-system
 data:
   scheduler-config.yaml: |
-    apiVersion: kubescheduler.config.k8s.io/v1alpha1
+    apiVersion: kubescheduler.config.k8s.io/v1beta3
     kind: KubeSchedulerConfiguration
-    schedulerName: scheduler-framework-sample
     leaderElection:
       leaderElect: true
       lockObjectName: scheduler-framework-sample
       lockObjectNamespace: kube-system
-    plugins:
-      filter:
-        enabled:
-        - name: "sample"
-      preBind:
-        enabled:
-        - name: "sample"
-    pluginConfig:
-    - name: "sample"
-      args: {"master": "master", "kubeconfig": "kubeconfig"}
+    profiles:
+    - schedulerName: scheduler-framework-sample
+      plugins:
+        filter:
+          enabled:
+          - name: "sample"
+        preBind:
+          enabled:
+          - name: "sample"
 ---
 apiVersion: apps/v1
 kind: Deployment

@@ -5,9 +5,8 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/klog"
-	framework "k8s.io/kubernetes/pkg/scheduler/framework/v1alpha1"
-	"k8s.io/kubernetes/pkg/scheduler/nodeinfo"
+	"k8s.io/klog/v2"
+	"k8s.io/kubernetes/pkg/scheduler/framework"
 )
 
 const (
@@ -15,27 +14,15 @@ const (
 	Name = "sample"
 )
 
-type Args struct {
-	KubeConfig string `json:"kubeconfig,omitempty"`
-	Master     string `json:"master,omitempty"`
-}
-
 var _ framework.FilterPlugin = &Sample{}
 var _ framework.PreBindPlugin = &Sample{}
 
 type Sample struct {
-	args   *Args
-	handle framework.FrameworkHandle
+	handle framework.Handle
 }
 
-func New(plArgs *runtime.Unknown, handle framework.FrameworkHandle) (framework.Plugin, error) {
-	args := &Args{}
-	if err := framework.DecodeInto(plArgs, args); err != nil {
-		return nil, err
-	}
-	klog.V(3).Infof("--------> args: %+v", args)
+func New(_ runtime.Object, handle framework.Handle) (framework.Plugin, error) {
 	return &Sample{
-		args:   args,
 		handle: handle,
 	}, nil
 }
@@ -44,8 +31,8 @@ func (s *Sample) Name() string {
 	return Name
 }
 
-func (s *Sample) Filter(ctx context.Context, state *framework.CycleState, pod *v1.Pod, node *nodeinfo.NodeInfo) *framework.Status {
-	klog.V(3).Infof("filter pod: %v", pod.Name)
+func (s *Sample) Filter(ctx context.Context, state *framework.CycleState, pod *v1.Pod, node *framework.NodeInfo) *framework.Status {
+	klog.V(2).Infof("filter pod: %v", pod.Name)
 	return framework.NewStatus(framework.Success, "")
 }
 
@@ -54,6 +41,6 @@ func (s *Sample) PreBind(ctx context.Context, state *framework.CycleState, pod *
 	if err != nil {
 		return framework.NewStatus(framework.Error, err.Error())
 	}
-	klog.V(3).Infof("prebind node info: %+v", nodeInfo.Node())
+	klog.V(2).Infof("prebind node info: %+v", nodeInfo.Node())
 	return framework.NewStatus(framework.Success, "")
 }
