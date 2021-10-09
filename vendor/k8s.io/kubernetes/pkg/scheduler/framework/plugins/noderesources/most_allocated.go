@@ -22,14 +22,15 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/kubernetes/pkg/scheduler/algorithm/priorities"
-	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/migration"
-	framework "k8s.io/kubernetes/pkg/scheduler/framework/v1alpha1"
+	"k8s.io/kubernetes/pkg/scheduler/apis/config"
+	"k8s.io/kubernetes/pkg/scheduler/apis/config/validation"
+	"k8s.io/kubernetes/pkg/scheduler/framework"
 )
 
 // MostAllocated is a score plugin that favors nodes with high allocation based on requested resources.
 type MostAllocated struct {
-	handle framework.FrameworkHandle
+	handle framework.Handle
+	resourceAllocationScorer
 }
 
 var _ = framework.ScorePlugin(&MostAllocated{})
@@ -46,12 +47,14 @@ func (ma *MostAllocated) Name() string {
 func (ma *MostAllocated) Score(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodeName string) (int64, *framework.Status) {
 	nodeInfo, err := ma.handle.SnapshotSharedLister().NodeInfos().Get(nodeName)
 	if err != nil {
-		return 0, framework.NewStatus(framework.Error, fmt.Sprintf("getting node %q from Snapshot: %v", nodeName, err))
+		return 0, framework.AsStatus(fmt.Errorf("getting node %q from Snapshot: %w", nodeName, err))
 	}
 
-	// MostRequestedPriorityMap does not use priority metadata, hence we pass nil here
-	s, err := priorities.MostRequestedPriorityMap(pod, nil, nodeInfo)
-	return s.Score, migration.ErrorToFrameworkStatus(err)
+	// ma.score favors nodes with most requested resources.
+	// It calculates the percentage of memory and CPU requested by pods scheduled on the node, and prioritizes
+	// based on the maximum of the average of the fraction of requested to capacity.
+	// Details: (cpu(MaxNodeScore * sum(requested) / capacity) + memory(MaxNodeScore * sum(requested) / capacity)) / weightSum
+	return ma.score(pod, nodeInfo)
 }
 
 // ScoreExtensions of the Score plugin.
@@ -60,6 +63,57 @@ func (ma *MostAllocated) ScoreExtensions() framework.ScoreExtensions {
 }
 
 // NewMostAllocated initializes a new plugin and returns it.
-func NewMostAllocated(_ *runtime.Unknown, h framework.FrameworkHandle) (framework.Plugin, error) {
-	return &MostAllocated{handle: h}, nil
+func NewMostAllocated(maArgs runtime.Object, h framework.Handle) (framework.Plugin, error) {
+	args, ok := maArgs.(*config.NodeResourcesMostAllocatedArgs)
+	if !ok {
+		return nil, fmt.Errorf("want args to be of type NodeResourcesMostAllocatedArgs, got %T", args)
+	}
+
+	if err := validation.ValidateNodeResourcesMostAllocatedArgs(args); err != nil {
+		return nil, err
+	}
+
+	resToWeightMap := make(resourceToWeightMap)
+	for _, resource := range (*args).Resources {
+		resToWeightMap[v1.ResourceName(resource.Name)] = resource.Weight
+	}
+
+	return &MostAllocated{
+		handle: h,
+		resourceAllocationScorer: resourceAllocationScorer{
+			Name:                MostAllocatedName,
+			scorer:              mostResourceScorer(resToWeightMap),
+			resourceToWeightMap: resToWeightMap,
+		},
+	}, nil
+}
+
+func mostResourceScorer(resToWeightMap resourceToWeightMap) func(requested, allocable resourceToValueMap, includeVolumes bool, requestedVolumes int, allocatableVolumes int) int64 {
+	return func(requested, allocable resourceToValueMap, includeVolumes bool, requestedVolumes int, allocatableVolumes int) int64 {
+		var nodeScore, weightSum int64
+		for resource, weight := range resToWeightMap {
+			resourceScore := mostRequestedScore(requested[resource], allocable[resource])
+			nodeScore += resourceScore * weight
+			weightSum += weight
+		}
+		return (nodeScore / weightSum)
+	}
+}
+
+// The used capacity is calculated on a scale of 0-MaxNodeScore (MaxNodeScore is
+// constant with value set to 100).
+// 0 being the lowest priority and 100 being the highest.
+// The more resources are used the higher the score is. This function
+// is almost a reversed version of noderesources.leastRequestedScore.
+func mostRequestedScore(requested, capacity int64) int64 {
+	if capacity == 0 {
+		return 0
+	}
+	if requested > capacity {
+		// `requested` might be greater than `capacity` because pods with no
+		// requests get minimum values.
+		requested = capacity
+	}
+
+	return (requested * framework.MaxNodeScore) / capacity
 }

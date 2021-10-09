@@ -17,29 +17,22 @@ limitations under the License.
 package util
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/klog"
-	podutil "k8s.io/kubernetes/pkg/api/v1/pod"
-	extenderv1 "k8s.io/kubernetes/pkg/scheduler/apis/extender/v1"
+	"k8s.io/apimachinery/pkg/types"
+	utilerrors "k8s.io/apimachinery/pkg/util/errors"
+	"k8s.io/apimachinery/pkg/util/strategicpatch"
+	"k8s.io/client-go/kubernetes"
+	corev1helpers "k8s.io/component-helpers/scheduling/corev1"
+	"k8s.io/klog/v2"
+	extenderv1 "k8s.io/kube-scheduler/extender/v1"
+	v1helper "k8s.io/kubernetes/pkg/apis/core/v1/helper"
 )
-
-// GetContainerPorts returns the used host ports of Pods: if 'port' was used, a 'port:true' pair
-// will be in the result; but it does not resolve port conflict.
-func GetContainerPorts(pods ...*v1.Pod) []*v1.ContainerPort {
-	var ports []*v1.ContainerPort
-	for _, pod := range pods {
-		for j := range pod.Spec.Containers {
-			container := &pod.Spec.Containers[j]
-			for k := range container.Ports {
-				ports = append(ports, &container.Ports[k])
-			}
-		}
-	}
-	return ports
-}
 
 // GetPodFullName returns a name that uniquely identifies a pod.
 func GetPodFullName(pod *v1.Pod) string {
@@ -68,15 +61,15 @@ func GetEarliestPodStartTime(victims *extenderv1.Victims) *metav1.Time {
 	}
 
 	earliestPodStartTime := GetPodStartTime(victims.Pods[0])
-	maxPriority := podutil.GetPodPriority(victims.Pods[0])
+	maxPriority := corev1helpers.PodPriority(victims.Pods[0])
 
 	for _, pod := range victims.Pods {
-		if podutil.GetPodPriority(pod) == maxPriority {
+		if corev1helpers.PodPriority(pod) == maxPriority {
 			if GetPodStartTime(pod).Before(earliestPodStartTime) {
 				earliestPodStartTime = GetPodStartTime(pod)
 			}
-		} else if podutil.GetPodPriority(pod) > maxPriority {
-			maxPriority = podutil.GetPodPriority(pod)
+		} else if corev1helpers.PodPriority(pod) > maxPriority {
+			maxPriority = corev1helpers.PodPriority(pod)
 			earliestPodStartTime = GetPodStartTime(pod)
 		}
 	}
@@ -89,10 +82,67 @@ func GetEarliestPodStartTime(victims *extenderv1.Victims) *metav1.Time {
 // It takes arguments of the type "interface{}" to be used with SortableList,
 // but expects those arguments to be *v1.Pod.
 func MoreImportantPod(pod1, pod2 *v1.Pod) bool {
-	p1 := podutil.GetPodPriority(pod1)
-	p2 := podutil.GetPodPriority(pod2)
+	p1 := corev1helpers.PodPriority(pod1)
+	p2 := corev1helpers.PodPriority(pod2)
 	if p1 != p2 {
 		return p1 > p2
 	}
 	return GetPodStartTime(pod1).Before(GetPodStartTime(pod2))
+}
+
+// PatchPodStatus calculates the delta bytes change from <old.Status> to <newStatus>,
+// and then submit a request to API server to patch the pod changes.
+func PatchPodStatus(cs kubernetes.Interface, old *v1.Pod, newStatus *v1.PodStatus) error {
+	if newStatus == nil {
+		return nil
+	}
+
+	oldData, err := json.Marshal(v1.Pod{Status: old.Status})
+	if err != nil {
+		return err
+	}
+
+	newData, err := json.Marshal(v1.Pod{Status: *newStatus})
+	if err != nil {
+		return err
+	}
+	patchBytes, err := strategicpatch.CreateTwoWayMergePatch(oldData, newData, &v1.Pod{})
+	if err != nil {
+		return fmt.Errorf("failed to create merge patch for pod %q/%q: %v", old.Namespace, old.Name, err)
+	}
+
+	if "{}" == string(patchBytes) {
+		return nil
+	}
+
+	_, err = cs.CoreV1().Pods(old.Namespace).Patch(context.TODO(), old.Name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{}, "status")
+	return err
+}
+
+// DeletePod deletes the given <pod> from API server
+func DeletePod(cs kubernetes.Interface, pod *v1.Pod) error {
+	return cs.CoreV1().Pods(pod.Namespace).Delete(context.TODO(), pod.Name, metav1.DeleteOptions{})
+}
+
+// ClearNominatedNodeName internally submit a patch request to API server
+// to set each pods[*].Status.NominatedNodeName> to "".
+func ClearNominatedNodeName(cs kubernetes.Interface, pods ...*v1.Pod) utilerrors.Aggregate {
+	var errs []error
+	for _, p := range pods {
+		if len(p.Status.NominatedNodeName) == 0 {
+			continue
+		}
+		podStatusCopy := p.Status.DeepCopy()
+		podStatusCopy.NominatedNodeName = ""
+		if err := PatchPodStatus(cs, p, podStatusCopy); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return utilerrors.NewAggregate(errs)
+}
+
+// IsScalarResourceName validates the resource for Extended, Hugepages, Native and AttachableVolume resources
+func IsScalarResourceName(name v1.ResourceName) bool {
+	return v1helper.IsExtendedResourceName(name) || v1helper.IsHugePageResourceName(name) ||
+		v1helper.IsPrefixedNativeResource(name) || v1helper.IsAttachableVolumeResourceName(name)
 }

@@ -21,14 +21,12 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/kubernetes/pkg/scheduler/algorithm/predicates"
-	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/migration"
-	framework "k8s.io/kubernetes/pkg/scheduler/framework/v1alpha1"
-	"k8s.io/kubernetes/pkg/scheduler/nodeinfo"
+	v1helper "k8s.io/component-helpers/scheduling/corev1"
+	"k8s.io/kubernetes/pkg/scheduler/framework"
 )
 
-// NodeUnschedulable is a plugin that priorities nodes according to the node annotation
-// "scheduler.alpha.kubernetes.io/preferAvoidPods".
+// NodeUnschedulable plugin filters nodes that set node.Spec.Unschedulable=true unless
+// the pod tolerates {key=node.kubernetes.io/unschedulable, effect:NoSchedule} taint.
 type NodeUnschedulable struct {
 }
 
@@ -37,18 +35,36 @@ var _ framework.FilterPlugin = &NodeUnschedulable{}
 // Name is the name of the plugin used in the plugin registry and configurations.
 const Name = "NodeUnschedulable"
 
+const (
+	// ErrReasonUnknownCondition is used for NodeUnknownCondition predicate error.
+	ErrReasonUnknownCondition = "node(s) had unknown conditions"
+	// ErrReasonUnschedulable is used for NodeUnschedulable predicate error.
+	ErrReasonUnschedulable = "node(s) were unschedulable"
+)
+
 // Name returns name of the plugin. It is used in logs, etc.
 func (pl *NodeUnschedulable) Name() string {
 	return Name
 }
 
 // Filter invoked at the filter extension point.
-func (pl *NodeUnschedulable) Filter(ctx context.Context, _ *framework.CycleState, pod *v1.Pod, nodeInfo *nodeinfo.NodeInfo) *framework.Status {
-	_, reasons, err := predicates.CheckNodeUnschedulablePredicate(pod, nil, nodeInfo)
-	return migration.PredicateResultToFrameworkStatus(reasons, err)
+func (pl *NodeUnschedulable) Filter(ctx context.Context, _ *framework.CycleState, pod *v1.Pod, nodeInfo *framework.NodeInfo) *framework.Status {
+	if nodeInfo == nil || nodeInfo.Node() == nil {
+		return framework.NewStatus(framework.UnschedulableAndUnresolvable, ErrReasonUnknownCondition)
+	}
+	// If pod tolerate unschedulable taint, it's also tolerate `node.Spec.Unschedulable`.
+	podToleratesUnschedulable := v1helper.TolerationsTolerateTaint(pod.Spec.Tolerations, &v1.Taint{
+		Key:    v1.TaintNodeUnschedulable,
+		Effect: v1.TaintEffectNoSchedule,
+	})
+	// TODO (k82cn): deprecates `node.Spec.Unschedulable` in 1.13.
+	if nodeInfo.Node().Spec.Unschedulable && !podToleratesUnschedulable {
+		return framework.NewStatus(framework.UnschedulableAndUnresolvable, ErrReasonUnschedulable)
+	}
+	return nil
 }
 
 // New initializes a new plugin and returns it.
-func New(_ *runtime.Unknown, _ framework.FrameworkHandle) (framework.Plugin, error) {
+func New(_ runtime.Object, _ framework.Handle) (framework.Plugin, error) {
 	return &NodeUnschedulable{}, nil
 }
