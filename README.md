@@ -1,3 +1,5 @@
+
+
 # scheduler-framework-sample
 
 ![](https://github.com/angao/scheduler-framework-sample/workflows/Go/badge.svg)
@@ -21,4 +23,11 @@ $ make image
 
 ```shell
 $ kubectl apply -f ./deploy/
+```
+
+## Usage
+
+To schedule a pod with the custom scheduler, set the `schedulerName` field in the pod spec to `scheduler-framework-sample`. An example is provided in `config/busybox.yaml`:
+```shell
+$ kubectl apply -f ./config/busybox.yaml
 ```
